@@ -703,6 +703,9 @@
   function renderQuestion(q) {
     if (renderedQuestionId !== q.id) {
       renderedQuestionId = q.id;
+      // Reset controls from the previous question (the text form is reused, not rebuilt).
+      submitting = false;
+      $$('#pTextForm button').forEach((b) => { b.disabled = false; });
       $('#pError').textContent = '';
       $('#pIndex').textContent = `Question ${q.index}`;
       $('#pText').textContent = q.text;
