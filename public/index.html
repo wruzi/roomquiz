@@ -141,11 +141,16 @@
 
             <!-- Live / results -->
             <div class="card" id="liveCard" hidden>
+              <div class="q-switch-row">
+                <nav class="q-switch" id="qSwitch" aria-label="Questions"></nav>
+                <button class="follow-btn" id="followLive" type="button" hidden>Follow live</button>
+              </div>
               <div class="card-head">
                 <span class="label" id="liveIndex">Question 1</span>
                 <span class="pill" id="livePhase"></span>
               </div>
               <h2 class="question-text" id="liveText"></h2>
+              <p class="live-status" id="liveStatus"></p>
 
               <div class="timer" id="hostTimer">
                 <div class="timer-track"><div class="timer-fill" id="hostTimerFill"></div></div>
@@ -191,10 +196,6 @@
               <p class="queued-status" id="queuedStatus"></p>
               <div class="queued-actions">
                 <button class="btn ghost" id="queuedEdit" type="button">Edit</button>
-                <button class="btn ghost" id="queuedHold" type="button" hidden>Hold</button>
-                <button class="btn primary" id="queuedSend" type="button" hidden>
-                  <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg><span>Send Now</span>
-                </button>
                 <button class="btn ghost" id="queuedRemove" type="button">Remove</button>
               </div>
             </div>
@@ -231,11 +232,29 @@
 
               <div class="field">
                 <div class="row-between">
-                  <label class="label" for="qTime">Time limit</label>
-                  <output class="mono strong" id="qTimeOut" for="qTime">20s</output>
+                  <span class="label" id="timeLabel">Time limit</span>
+                  <output class="mono strong" id="qTimeOut" aria-live="polite">20s</output>
                 </div>
-                <input id="qTime" type="range" min="10" max="60" step="5" value="20">
-                <div class="row-between muted small" aria-hidden="true"><span>10s</span><span>60s</span></div>
+                <div class="segmented" role="radiogroup" aria-labelledby="timeLabel">
+                  <label><input type="radio" name="timeMode" value="quick" checked><span>Quick</span></label>
+                  <label><input type="radio" name="timeMode" value="custom"><span>Custom</span></label>
+                </div>
+                <div id="quickTime">
+                  <input id="qTime" type="range" min="10" max="60" step="5" value="20" aria-label="Time limit in seconds">
+                  <div class="row-between muted small" aria-hidden="true"><span>10s</span><span>60s</span></div>
+                </div>
+                <div class="custom-time" id="customTime" hidden>
+                  <label class="field">
+                    <span class="label">Minutes</span>
+                    <input id="qMin" name="minutes" type="number" inputmode="numeric" min="0" max="60" step="1" value="1">
+                  </label>
+                  <span class="custom-sep" aria-hidden="true">:</span>
+                  <label class="field">
+                    <span class="label">Seconds</span>
+                    <input id="qSec" name="seconds" type="number" inputmode="numeric" min="0" max="59" step="1" value="0">
+                  </label>
+                </div>
+                <span class="hint" id="customHint" hidden>Anything from 5 seconds to 60 minutes.</span>
               </div>
 
               <p class="error" id="composeError" role="alert"></p>
@@ -243,7 +262,7 @@
                 <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg>
                 <span id="startQLabel">Ask Question</span>
               </button>
-              <p class="hint center" id="queueHint" hidden>It will be sent automatically 5 seconds after the current question ends.</p>
+              <p class="hint center" id="queueHint" hidden>Students who finish the current question get this one straight away, with its own time limit.</p>
               <p class="hint center" id="noStudentsHint" hidden>No students yet — share the code above.</p>
             </form>
 
@@ -341,11 +360,8 @@
 
         <!-- Answered -->
         <div class="card play-card center-card" id="pLocked" hidden>
-          <div class="timer slim">
-            <div class="timer-track"><div class="timer-fill" id="pLockFill"></div></div>
-          </div>
-          <span class="badge-icon neutral" aria-hidden="true"><svg class="icon"><use href="#i-check"/></svg></span>
-          <h1>Answer locked in</h1>
+          <span class="badge-icon neutral" id="pLockedIcon" aria-hidden="true"><svg class="icon"><use href="#i-check"/></svg></span>
+          <h1 id="pLockedTitle">Answer locked in</h1>
           <p class="locked-answer" id="pLockedAnswer"></p>
           <p class="muted small" id="pLockedTime"></p>
         </div>
@@ -362,7 +378,11 @@
             <ol class="rank-list" id="rBoard"></ol>
             <p class="muted small" id="rMyRank"></p>
           </div>
-          <p class="muted small" id="rNext">Next question coming up…</p>
+          <div class="section" id="rHistoryWrap" hidden>
+            <h2 class="section-title"><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg>Your answers</h2>
+            <ol class="history" id="rHistory"></ol>
+          </div>
+          <p class="muted small" id="rNext">Waiting for the next question…</p>
         </div>
 
         <button class="btn danger-ghost" id="leaveRoom" type="button">

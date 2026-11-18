@@ -10,8 +10,9 @@ const QRCode = require('qrcode');
 
 const PORT = Number(process.env.PORT) || 3000;
 const POINTS = 10;
-const MIN_TIME = 10;
-const MAX_TIME = 60;
+const MIN_TIME = 5; // seconds
+const MAX_TIME = 60 * 60; // 60 minutes
+const GRACE_MS = 300; // network slack on personal deadlines
 const ROOM_TTL_MS = 3 * 60 * 60 * 1000; // drop rooms idle for 3h
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O/1/I/L
 
@@ -107,14 +108,138 @@ function gradeAnswer(q, answer) {
   return q.accepted.includes(norm(answer));
 }
 
-function currentQuestion(room) {
-  return room.questions[room.questions.length - 1] || null;
+/* ---------------- question flow ----------------
+ * Every student moves through room.questions at their own pace:
+ *   s.cur  = index of the question they're answering right now (or null)
+ *   s.next = first index they haven't passed yet
+ * A student gets a question with its full time limit the moment they're free
+ * (answered / timed out on the previous one). A question closes - and its
+ * results are revealed - once every student has passed it.
+ */
+
+function parseQuestion(data) {
+  const type = data?.type === 'text' ? 'text' : 'mcq';
+  const text = clean(data?.text, 300);
+  if (!text) return { error: 'Write a question first.' };
+  const duration = Math.min(MAX_TIME, Math.max(MIN_TIME, Math.round(Number(data?.duration) || 20)));
+  const spec = { type, text, duration, options: [], correct: null, accepted: [], acceptedRaw: '' };
+  if (type === 'mcq') {
+    spec.options = (Array.isArray(data?.options) ? data.options : []).slice(0, 4).map((o) => clean(o, 120));
+    if (spec.options.length < 2 || spec.options.some((o) => !o)) return { error: 'Fill in at least 2 options.' };
+    spec.correct = Number(data?.correct);
+    if (!Number.isInteger(spec.correct) || spec.correct < 0 || spec.correct >= spec.options.length) {
+      return { error: 'Choose the correct option.' };
+    }
+  } else {
+    spec.acceptedRaw = clean(data?.accepted, 300);
+    spec.accepted = spec.acceptedRaw.split(',').map(norm).filter(Boolean);
+  }
+  return spec;
+}
+
+const isPending = (q) => !q.closed && q.starts.size === 0;
+const specOf = (q) => ({
+  type: q.type, text: q.text, duration: q.duration, options: q.options,
+  correct: q.correct, accepted: q.accepted, acceptedRaw: q.acceptedRaw,
+});
+
+function phaseOf(room) {
+  if (!room.questions.length) return 'compose';
+  return room.questions.some((q) => !q.closed) ? 'live' : 'results';
+}
+
+// Give a free student the next open question, starting their personal timer.
+function dispatch(room, s) {
+  if (s.cur != null) return;
+  let i = s.next;
+  while (i < room.questions.length && room.questions[i].closed) i++;
+  s.next = i;
+  const q = room.questions[i];
+  if (!q) return;
+  const now = Date.now();
+  q.starts.set(s.id, { at: now, endsAt: now + q.duration * 1000 });
+  s.cur = i;
+  clearTimeout(s.timer);
+  s.timer = setTimeout(() => {
+    if (finish(room, s, i)) emitAll(room);
+  }, q.duration * 1000 + GRACE_MS);
+}
+
+// Student is done with question i (answered or out of time). Returns true if state changed.
+function finish(room, s, i) {
+  if (s.cur !== i) return false;
+  clearTimeout(s.timer);
+  s.timer = null;
+  s.cur = null;
+  s.next = i + 1;
+  dispatch(room, s);
+  checkClose(room);
+  return true;
+}
+
+function closeQ(room, q) {
+  if (q.closed) return;
+  q.closed = true;
+  q.closedAt = Date.now();
+  recomputeScores(room);
+}
+
+function checkClose(room) {
+  if (!room.students.size) return;
+  room.questions.forEach((q, k) => {
+    if (q.closed) return;
+    if ([...room.students.values()].every((s) => s.next > k)) closeQ(room, q);
+  });
+}
+
+function addQuestion(room, spec) {
+  room.questions.push({
+    ...spec,
+    id: token().slice(0, 8),
+    index: room.questions.length + 1,
+    starts: new Map(),
+    answers: new Map(),
+    closed: false,
+    createdAt: Date.now(),
+  });
+  for (const s of room.students.values()) dispatch(room, s);
+}
+
+// Host ends question k for everyone: students on it move on, students who haven't reached it skip it.
+function endQuestion(room, k) {
+  const q = room.questions[k];
+  if (!q || q.closed) return;
+  closeQ(room, q);
+  for (const s of room.students.values()) {
+    if (s.cur === k) finish(room, s, k);
+  }
+  checkClose(room);
+}
+
+function removeStudent(room, s) {
+  clearTimeout(s.timer);
+  room.students.delete(s.id);
+  for (const q of room.questions) {
+    q.answers.delete(s.id);
+    q.starts.delete(s.id);
+  }
+  recomputeScores(room);
+  checkClose(room);
+}
+
+// The question the host is looking at: their pick, else the earliest one in progress, else the latest.
+function hostViewIndex(room) {
+  const qs = room.questions;
+  if (room.hostView != null && qs[room.hostView]) return room.hostView;
+  const inProgress = qs.findIndex((q) => !q.closed && q.starts.size > 0);
+  if (inProgress !== -1) return inProgress;
+  for (let k = qs.length - 1; k >= 0; k--) if (!isPending(qs[k])) return k;
+  return qs.length ? 0 : null;
 }
 
 /* ---------------- state snapshots ---------------- */
 
-function stats(room, q) {
-  if (!q) return null;
+function stats(room, q, k) {
   const answers = [...q.answers.entries()];
   const counts = q.type === 'mcq' ? q.options.map(() => 0) : [];
   const textGroups = new Map();
@@ -136,11 +261,14 @@ function stats(room, q) {
     .sort((a, b) => a[1].timeMs - b[1].timeMs)
     .slice(0, 3)
     .map(([sid, a]) => ({ name: room.students.get(sid)?.name || '—', timeMs: a.timeMs }));
+  const total = q.closed
+    ? q.starts.size
+    : [...room.students.values()].filter((s) => q.starts.has(s.id) || s.next <= k).length;
   return {
     counts,
     textGroups: [...textGroups.values()].sort((a, b) => b.count - a.count).slice(0, 8),
     answered: answers.length,
-    total: room.students.size,
+    total,
     avgMs: answers.length ? Math.round(totalMs / answers.length) : 0,
     correctCount: answers.filter(([, a]) => a.correct).length,
     fastest,
@@ -149,7 +277,6 @@ function stats(room, q) {
 }
 
 function publicQuestion(q, includeKey) {
-  if (!q) return null;
   const base = {
     id: q.id,
     index: q.index,
@@ -157,7 +284,6 @@ function publicQuestion(q, includeKey) {
     type: q.type,
     options: q.options,
     duration: q.duration,
-    endsAt: q.endsAt,
     closed: q.closed,
   };
   if (includeKey || q.closed) {
@@ -168,68 +294,116 @@ function publicQuestion(q, includeKey) {
 }
 
 function hostState(room) {
-  const q = currentQuestion(room);
-  const live = room.phase !== 'compose' ? q : null;
+  const k = hostViewIndex(room);
+  const q = k == null ? null : room.questions[k];
   const lb = leaderboard(room);
+  const pendingQ = room.questions.find(isPending);
+  let question = null;
+  if (q) {
+    // Countdown = the latest personal deadline among students still on it.
+    let deadline = 0;
+    for (const s of room.students.values()) {
+      if (s.cur === k) deadline = Math.max(deadline, q.starts.get(s.id).endsAt);
+    }
+    question = { ...publicQuestion(q, true), deadline: deadline || null, pending: isPending(q) };
+  }
   return {
     code: room.code,
     joinUrl: room.joinUrl,
-    phase: room.phase,
+    phase: phaseOf(room),
     questionCount: room.questions.length,
-    question: publicQuestion(live, true),
-    stats: stats(room, live),
+    pinned: room.hostView != null,
+    viewIndex: k,
+    questions: room.questions.map((x) => ({
+      index: x.index,
+      closed: x.closed,
+      pending: isPending(x),
+      on: [...room.students.values()].filter((s) => s.cur === x.index - 1).length,
+    })),
+    question,
+    stats: q ? stats(room, q, k) : null,
     students: [...room.students.values()].map((s) => {
-      const a = live?.answers.get(s.id);
+      const a = q?.answers.get(s.id);
+      let status = 'none';
+      if (q) {
+        if (a) status = 'answered';
+        else if (s.cur === k) status = 'on';
+        else if (s.next <= k) status = 'behind';
+        else status = 'missed';
+      }
       return {
         id: s.id,
         name: s.name,
         score: s.score,
         connected: s.connected,
+        status,
+        onIndex: s.cur != null ? s.cur + 1 : null,
         answered: !!a,
         answer: a ? a.answer : null,
         timeMs: a ? a.timeMs : null,
         correct: a ? a.correct : null,
       };
     }),
-    ranking: live && live.closed
-      ? questionRanking(live).map((r) => ({ name: room.students.get(r.sid)?.name || '—', timeMs: r.timeMs, correct: r.correct }))
+    ranking: q && q.closed
+      ? questionRanking(q).map((r) => ({ name: room.students.get(r.sid)?.name || '—', timeMs: r.timeMs, correct: r.correct }))
       : [],
     leaderboard: lb,
-    queued: room.queued
-      ? { text: room.queued.text, type: room.queued.type, options: room.queued.options.length, duration: room.queued.duration }
+    queued: pendingQ
+      ? { text: pendingQ.text, type: pendingQ.type, options: pendingQ.options.length, duration: pendingQ.duration, index: pendingQ.index }
       : null,
-    autoStartAt: room.autoStartAt || null,
     serverNow: Date.now(),
   };
 }
 
+function resultFor(q, s) {
+  const a = q.answers.get(s.id);
+  const correctOnes = questionRanking(q).filter((r) => r.correct);
+  return {
+    answered: !!a,
+    correct: a ? a.correct : null,
+    points: a && a.correct ? POINTS : 0,
+    timeMs: a ? a.timeMs : null,
+    position: a && a.correct ? correctOnes.findIndex((r) => r.sid === s.id) + 1 : null,
+    ofCorrect: correctOnes.length,
+  };
+}
+
 function studentState(room, s) {
-  const q = currentQuestion(room);
-  const live = room.phase !== 'compose' ? q : null;
   const lb = leaderboard(room);
   const me = lb.find((r) => r.id === s.id);
-  const a = live?.answers.get(s.id);
-  let result = null;
-  if (live && live.closed) {
-    const ranking = questionRanking(live);
-    result = {
-      answered: !!a,
-      correct: a ? a.correct : null,
-      points: a && a.correct ? POINTS : 0,
-      timeMs: a ? a.timeMs : null,
-      position: a && a.correct ? ranking.filter((r) => r.correct).findIndex((r) => r.sid === s.id) + 1 : null,
-      ofCorrect: ranking.filter((r) => r.correct).length,
-    };
+  let question = null;
+  if (s.cur != null) {
+    const q = room.questions[s.cur];
+    question = { ...publicQuestion(q, false), endsAt: q.starts.get(s.id).endsAt };
   }
+  // Last question this student actually took (for the "locked in" / result screens).
+  let last = null;
+  if (s.cur == null) {
+    for (let k = Math.min(s.next, room.questions.length) - 1; k >= 0; k--) {
+      const q = room.questions[k];
+      if (!q.starts.has(s.id)) continue;
+      const a = q.answers.get(s.id);
+      last = {
+        question: publicQuestion(q, false),
+        myAnswer: a ? { answer: a.answer, timeMs: a.timeMs } : null,
+        result: q.closed ? resultFor(q, s) : null,
+      };
+      break;
+    }
+  }
+  const history = room.questions
+    .filter((q) => q.closed && q.starts.has(s.id))
+    .map((q) => {
+      const r = resultFor(q, s);
+      return { index: q.index, answered: r.answered, correct: r.correct, points: r.points };
+    });
   return {
     code: room.code,
-    phase: room.phase,
     me: { id: s.id, name: s.name, score: s.score, rank: me?.rank || null, total: lb.length },
-    question: publicQuestion(live, false),
-    myAnswer: a ? { answer: a.answer, timeMs: a.timeMs } : null,
-    result,
+    question,
+    last,
+    history,
     leaderboard: lb.slice(0, 5).map(({ id, name, score, rank }) => ({ id, name, score, rank })),
-    nextAt: room.autoStartAt || null,
     serverNow: Date.now(),
   };
 }
@@ -248,80 +422,9 @@ function emitAll(room) {
   for (const s of room.students.values()) emitStudent(room, s);
 }
 
-/* ---------------- question lifecycle ---------------- */
-
-const AUTO_START_MS = 5000; // results break before a queued question starts
-
-// Validate host input into a question spec, or { error }.
-function parseQuestion(data) {
-  const type = data?.type === 'text' ? 'text' : 'mcq';
-  const text = clean(data?.text, 300);
-  if (!text) return { error: 'Write a question first.' };
-  const duration = Math.min(MAX_TIME, Math.max(MIN_TIME, Math.round(Number(data?.duration) || 20)));
-  const spec = { type, text, duration, options: [], correct: null, accepted: [], acceptedRaw: '' };
-  if (type === 'mcq') {
-    spec.options = (Array.isArray(data?.options) ? data.options : []).slice(0, 4).map((o) => clean(o, 120));
-    if (spec.options.length < 2 || spec.options.some((o) => !o)) return { error: 'Fill in at least 2 options.' };
-    spec.correct = Number(data?.correct);
-    if (!Number.isInteger(spec.correct) || spec.correct < 0 || spec.correct >= spec.options.length) {
-      return { error: 'Choose the correct option.' };
-    }
-  } else {
-    spec.acceptedRaw = clean(data?.accepted, 300);
-    spec.accepted = spec.acceptedRaw.split(',').map(norm).filter(Boolean);
-  }
-  return spec;
-}
-
-function cancelAutoStart(room) {
-  clearTimeout(room.autoTimer);
-  room.autoTimer = null;
-  room.autoStartAt = null;
-}
-
-function startQuestion(room, spec) {
-  cancelAutoStart(room);
-  if (room.queued === spec) room.queued = null;
-  const now = Date.now();
-  const q = {
-    ...spec,
-    id: token().slice(0, 8),
-    index: room.questions.length + 1,
-    startedAt: now,
-    endsAt: now + spec.duration * 1000,
-    answers: new Map(),
-    closed: false,
-  };
-  q.timer = setTimeout(() => closeQuestion(room), spec.duration * 1000 + 300);
-  room.questions.push(q);
-  room.phase = 'live';
-  emitAll(room);
-}
-
-function closeQuestion(room) {
-  const q = currentQuestion(room);
-  if (!q || q.closed) return;
-  clearTimeout(q.timer);
-  clearTimeout(q.allInTimer);
-  q.closed = true;
-  q.endsAt = Math.min(q.endsAt, Date.now());
-  room.phase = 'results';
-  recomputeScores(room);
-  if (room.queued) {
-    room.autoStartAt = Date.now() + AUTO_START_MS;
-    room.autoTimer = setTimeout(() => room.queued && startQuestion(room, room.queued), AUTO_START_MS);
-  }
-  emitAll(room);
-}
-
-function maybeCloseEarly(room) {
-  const q = currentQuestion(room);
-  if (!q || q.closed) return;
-  const connected = [...room.students.values()].filter((s) => s.connected);
-  if (connected.length && connected.every((s) => q.answers.has(s.id))) {
-    clearTimeout(q.allInTimer);
-    q.allInTimer = setTimeout(() => closeQuestion(room), 800);
-  }
+function destroyRoom(room) {
+  for (const s of room.students.values()) clearTimeout(s.timer);
+  rooms.delete(room.code);
 }
 
 /* ---------------- sockets ---------------- */
@@ -341,12 +444,9 @@ io.on('connection', (socket) => {
       qrSvg,
       hostToken: token(),
       hostSocket: socket.id,
-      phase: 'compose',
+      hostView: null,
       students: new Map(),
       questions: [],
-      queued: null,
-      autoStartAt: null,
-      autoTimer: null,
       touched: Date.now(),
     };
     rooms.set(code, room);
@@ -372,64 +472,64 @@ io.on('connection', (socket) => {
     return room && room.hostSocket === socket.id ? room : null;
   };
 
+  // Ask a question. If others are still running it's queued: free students get it
+  // right away, everyone else as soon as they finish what they're on.
   socket.on('host:start', (data, fn) => {
     const room = hostRoom();
     if (!room) return ack(fn, { ok: false, error: 'Room not found.' });
+    if (room.questions.some(isPending)) return ack(fn, { ok: false, error: 'A question is already queued. Edit or remove it first.' });
     const spec = parseQuestion(data);
     if (spec.error) return ack(fn, { ok: false, error: spec.error });
-    if (room.phase === 'live') {
-      // A question is running: hold this one and send it when time is up.
-      room.queued = spec;
-      ack(fn, { ok: true, queued: true });
-      emitHost(room);
-      return;
-    }
-    startQuestion(room, spec);
-    ack(fn, { ok: true });
+    const wasLive = phaseOf(room) === 'live';
+    addQuestion(room, spec);
+    const q = room.questions[room.questions.length - 1];
+    ack(fn, { ok: true, queued: wasLive && isPending(q) });
+    emitAll(room);
   });
 
-  // Take the queued question back out (to edit or discard it).
+  // Take back a queued question nobody has started yet (to edit or discard).
   socket.on('host:unqueue', (_data, fn) => {
     const room = hostRoom();
     if (!room) return ack(fn, { ok: false });
-    const spec = room.queued;
-    cancelAutoStart(room);
-    room.queued = null;
-    ack(fn, { ok: true, spec });
+    const last = room.questions[room.questions.length - 1];
+    if (!last || !isPending(last)) return ack(fn, { ok: false, error: 'Students have already started it.' });
+    room.questions.pop();
+    for (const s of room.students.values()) s.next = Math.min(s.next, room.questions.length);
+    if (room.hostView != null && room.hostView >= room.questions.length) room.hostView = null;
+    ack(fn, { ok: true, spec: specOf(last) });
     emitAll(room);
   });
 
-  socket.on('host:sendQueued', () => {
-    const room = hostRoom();
-    if (!room || !room.queued || room.phase === 'live') return;
-    startQuestion(room, room.queued);
-  });
-
-  socket.on('host:hold', () => {
+  socket.on('host:view', (data) => {
     const room = hostRoom();
     if (!room) return;
-    cancelAutoStart(room);
-    emitAll(room);
+    const k = data?.index == null ? NaN : Number(data.index); // null = follow live
+    room.hostView = Number.isInteger(k) && room.questions[k] ? k : null;
+    emitHost(room);
   });
 
-  socket.on('host:end', () => {
+  socket.on('host:end', (data) => {
     const room = hostRoom();
-    if (room) closeQuestion(room);
+    if (!room) return;
+    const k = room.questions.findIndex((q) => q.id === data?.questionId);
+    if (k === -1) return;
+    endQuestion(room, k);
+    emitAll(room);
   });
 
   // Host marks a text answer right/wrong (during or after the question).
   // `correct` is explicit so repeated taps can't flip it back.
   socket.on('host:markAnswer', (data) => {
     const room = hostRoom();
-    const q = room && currentQuestion(room);
-    if (!q || q.type !== 'text' || room.phase === 'compose') return;
+    const q = room?.questions.find((x) => x.id === data?.questionId);
+    if (!q || q.type !== 'text') return;
     const a = q.answers.get(data?.studentId);
     if (!a) return;
     a.correct = data?.correct === null ? null : !!data?.correct;
     if (q.closed) {
       recomputeScores(room);
       emitAll(room);
-    } else emitHost(room); // students learn the result when time is up
+    } else emitHost(room); // students learn the result once the question closes
   });
 
   socket.on('host:kick', (data) => {
@@ -437,20 +537,15 @@ io.on('connection', (socket) => {
     const s = room?.students.get(data?.studentId);
     if (!s) return;
     if (s.socket) io.to(s.socket).emit('student:kicked');
-    room.students.delete(s.id);
-    for (const q of room.questions) q.answers.delete(s.id);
-    recomputeScores(room);
+    removeStudent(room, s);
     emitAll(room);
   });
 
   socket.on('host:close', () => {
     const room = hostRoom();
     if (!room) return;
-    const q = currentQuestion(room);
-    if (q) clearTimeout(q.timer);
-    cancelAutoStart(room);
     io.to(`room:${room.code}`).emit('room:closed');
-    rooms.delete(room.code);
+    destroyRoom(room);
   });
 
   /* ---- student ---- */
@@ -480,6 +575,13 @@ io.on('connection', (socket) => {
     const taken = [...room.students.values()].some((s) => s.name.toLowerCase() === name.toLowerCase());
     if (taken) return ack(fn, { ok: false, field: 'name', error: 'That name is taken in this room. Try adding an initial.' });
 
+    // Late joiners start at the newest question already in progress (or the first open one).
+    const qs = room.questions;
+    let start = -1;
+    for (let k = qs.length - 1; k >= 0; k--) if (!qs[k].closed && qs[k].starts.size > 0) { start = k; break; }
+    if (start === -1) start = qs.findIndex((q) => !q.closed);
+    if (start === -1) start = qs.length;
+
     const s = {
       id: token().slice(0, 10),
       token: token(),
@@ -489,10 +591,14 @@ io.on('connection', (socket) => {
       score: 0,
       correctMs: 0,
       correctCount: 0,
+      cur: null,
+      next: start,
+      timer: null,
     };
     room.students.set(s.id, s);
     socket.data = { role: 'student', code, sid: s.id };
     socket.join(`room:${code}`);
+    dispatch(room, s);
     ack(fn, { ok: true, studentId: s.id, token: s.token, name: s.name });
     emitStudent(room, s);
     emitHost(room);
@@ -502,12 +608,14 @@ io.on('connection', (socket) => {
     if (socket.data?.role !== 'student') return ack(fn, { ok: false });
     const room = rooms.get(socket.data.code);
     const s = room?.students.get(socket.data.sid);
-    const q = room && currentQuestion(room);
-    if (!s || !q || q.closed || room.phase !== 'live') return ack(fn, { ok: false, error: 'Time is up.' });
+    if (!s || s.cur == null) return ack(fn, { ok: false, error: 'Time is up.' });
+    const k = s.cur;
+    const q = room.questions[k];
     if (q.id !== data?.questionId) return ack(fn, { ok: false, error: 'That question has ended.' });
     if (q.answers.has(s.id)) return ack(fn, { ok: false, error: 'You already answered.' });
+    const start = q.starts.get(s.id);
     const now = Date.now();
-    if (now > q.endsAt + 300) return ack(fn, { ok: false, error: 'Time is up.' });
+    if (now > start.endsAt + GRACE_MS) return ack(fn, { ok: false, error: 'Time is up.' });
 
     let answer;
     if (q.type === 'mcq') {
@@ -519,22 +627,20 @@ io.on('connection', (socket) => {
     }
     q.answers.set(s.id, {
       answer,
-      timeMs: Math.min(now - q.startedAt, q.duration * 1000),
+      timeMs: Math.min(now - start.at, q.duration * 1000),
       correct: gradeAnswer(q, answer),
     });
     ack(fn, { ok: true });
-    emitStudent(room, s);
-    emitHost(room);
-    maybeCloseEarly(room);
+    finish(room, s, k); // moves them straight on to the next question, if any
+    emitAll(room);
   });
 
   socket.on('student:leave', () => {
     if (socket.data?.role !== 'student') return;
     const room = rooms.get(socket.data.code);
-    if (!room) return;
-    room.students.delete(socket.data.sid);
-    for (const q of room.questions) q.answers.delete(socket.data.sid);
-    recomputeScores(room);
+    const s = room?.students.get(socket.data.sid);
+    if (!s) return;
+    removeStudent(room, s);
     socket.data = {};
     emitAll(room);
   });
@@ -558,8 +664,8 @@ io.on('connection', (socket) => {
 
 setInterval(() => {
   const now = Date.now();
-  for (const [code, room] of rooms) {
-    if (!room.hostSocket && now - room.touched > ROOM_TTL_MS) rooms.delete(code);
+  for (const room of rooms.values()) {
+    if (!room.hostSocket && now - room.touched > ROOM_TTL_MS) destroyRoom(room);
   }
 }, 10 * 60 * 1000).unref();
 

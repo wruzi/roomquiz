@@ -45,6 +45,14 @@
   const secFmt = new Intl.NumberFormat(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   const secs = (ms) => (ms == null ? '–' : `${secFmt.format(ms / 1000)}s`);
   const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
+  // 45 -> "45s", 90 -> "1m 30s", 600 -> "10m"
+  const fmtDur = (sec) => {
+    const m = Math.floor(sec / 60), r = sec % 60;
+    if (!m) return `${r}s`;
+    return r ? `${m}m ${r}s` : `${m}m`;
+  };
+  // countdown digits: 45 -> "45", 90 -> "1:30"
+  const fmtClock = (sec) => (sec < 60 ? String(sec) : `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`);
 
   let toastTimer;
   function toast(msg) {
@@ -230,11 +238,52 @@
   }));
 
   const qTime = $('#qTime');
-  const savedTime = store.get('rq-time');
-  if (savedTime) qTime.value = savedTime;
-  const syncTime = () => { $('#qTimeOut').textContent = `${qTime.value}s`; };
-  qTime.addEventListener('input', syncTime);
-  syncTime();
+  const qMin = $('#qMin');
+  const qSec = $('#qSec');
+  const MIN_SECS = 5;
+  const MAX_SECS = 3600;
+  const timeMode = () => $('input[name="timeMode"]:checked').value;
+
+  // Seconds chosen in the form, or null if the custom value is invalid.
+  function chosenDuration() {
+    if (timeMode() === 'quick') return Number(qTime.value);
+    const m = Number(qMin.value || 0);
+    const sec = Number(qSec.value || 0);
+    if (!Number.isFinite(m) || !Number.isFinite(sec) || m < 0 || sec < 0 || sec > 59 || !Number.isInteger(m) || !Number.isInteger(sec)) return null;
+    const total = m * 60 + sec;
+    return total >= MIN_SECS && total <= MAX_SECS ? total : null;
+  }
+
+  function syncTime() {
+    const custom = timeMode() === 'custom';
+    $('#quickTime').hidden = custom;
+    $('#customTime').hidden = !custom;
+    $('#customHint').hidden = !custom;
+    const d = chosenDuration();
+    $('#qTimeOut').textContent = d == null ? '–' : fmtDur(d);
+    const bad = custom && d == null;
+    qMin.setAttribute('aria-invalid', String(bad));
+    qSec.setAttribute('aria-invalid', String(bad));
+    $('#customHint').classList.toggle('error', bad);
+  }
+
+  function setDuration(sec) {
+    const quick = sec >= 10 && sec <= 60 && sec % 5 === 0;
+    $(`input[name="timeMode"][value="${quick ? 'quick' : 'custom'}"]`).checked = true;
+    if (quick) qTime.value = sec;
+    qMin.value = Math.floor(sec / 60);
+    qSec.value = sec % 60;
+    syncTime();
+  }
+
+  [qTime, qMin, qSec].forEach((inp) => inp.addEventListener('input', () => {
+    syncTime();
+    if (chosenDuration() != null && $('#composeError').textContent.startsWith('Set a time')) $('#composeError').textContent = '';
+  }));
+  $$('input[name="timeMode"]').forEach((r) => r.addEventListener('change', syncTime));
+  const savedTime = Number(store.get('rq-time'));
+  if (savedTime >= MIN_SECS && savedTime <= MAX_SECS) setDuration(savedTime);
+  else syncTime();
 
   $('#composeCard').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -243,7 +292,9 @@
     const text = $('#qText').value.trim();
     if (!text) { err.textContent = 'Write a question first.'; $('#qText').focus(); return; }
 
-    const payload = { text, type: qType(), duration: Number(qTime.value) };
+    const duration = chosenDuration();
+    if (duration == null) { err.textContent = 'Set a time between 5 seconds and 60 minutes.'; qMin.focus(); return; }
+    const payload = { text, type: qType(), duration };
     if (payload.type === 'mcq') {
       const raw = [0, 1, 2, 3].map((i) => $(`#opt${i}`).value.trim());
       const correctRaw = Number($('input[name="qCorrect"]:checked')?.value ?? -1);
@@ -260,7 +311,7 @@
     } else {
       payload.accepted = $('#qAccepted').value;
     }
-    store.set('rq-time', qTime.value);
+    store.set('rq-time', duration);
     const btn = $('#startQ');
     setLoading(btn, true);
     socket.timeout(8000).emit('host:start', payload, (e2, res) => {
@@ -268,7 +319,7 @@
       if (e2) { err.textContent = 'No response from server. Try again.'; return; }
       if (!res?.ok) { err.textContent = res?.error || 'Could not start the question.'; return; }
       clearForm();
-      if (res.queued) toast('Queued. It will be sent when time is up.');
+      if (res.queued) toast('Queued. Students get it as soon as they finish the current question.');
       haptic();
     });
   });
@@ -289,13 +340,13 @@
     [0, 1, 2, 3].forEach((i) => { $(`#opt${i}`).value = spec.options[i] || ''; });
     $(`input[name="qCorrect"][value="${spec.correct ?? 0}"]`).checked = true;
     $('#qAccepted').value = spec.acceptedRaw || '';
-    qTime.value = spec.duration;
-    syncTime();
+    setDuration(spec.duration);
   }
 
   function unqueue(edit) {
     socket.timeout(6000).emit('host:unqueue', {}, (err, res) => {
-      if (err || !res?.ok) return toast('Could not reach the server. Try again.');
+      if (err) return toast('Could not reach the server. Try again.');
+      if (!res?.ok) return toast(res?.error || 'Could not take the question back.');
       if (edit && res.spec) {
         fillForm(res.spec);
         setTimeout(() => $('#qText').focus(), 50);
@@ -304,20 +355,11 @@
   }
   $('#queuedEdit').addEventListener('click', () => unqueue(true));
   $('#queuedRemove').addEventListener('click', () => unqueue(false));
-  $('#queuedHold').addEventListener('click', () => socket.emit('host:hold'));
-  $('#queuedSend').addEventListener('click', () => socket.emit('host:sendQueued'));
-
-  // Countdown text for an auto-starting queued question (host + student).
-  setInterval(() => {
-    const at = mode === 'host' ? hostState?.autoStartAt : mode === 'student' ? studentState?.nextAt : null;
-    if (!at) return;
-    const left = Math.max(0, Math.ceil((at - serverNow()) / 1000));
-    const msg = `Next question in ${left}s`;
-    if (mode === 'host') $('#queuedStatus').textContent = `${msg}. Tap Hold to wait.`;
-    else $('#rNext').textContent = `${msg}…`;
-  }, 250);
-
-  $('#endQ').addEventListener('click', () => socket.emit('host:end'));
+  $('#endQ').addEventListener('click', () => {
+    const q = hostState?.question;
+    if (q) socket.emit('host:end', { questionId: q.id });
+  });
+  $('#followLive').addEventListener('click', () => socket.emit('host:view', { index: null }));
 
   $('#copyLink').addEventListener('click', async () => {
     try {
@@ -375,7 +417,7 @@
     const live = s.phase === 'live';
     // One queue slot: while a question is queued, the form is replaced by the "Up next" card.
     $('#composeCard').hidden = !!s.queued;
-    $('#liveCard').hidden = compose;
+    $('#liveCard').hidden = compose || !q;
     $('#composeTitle').textContent = live ? 'Prepare the next question' : `Question ${s.questionCount + 1}`;
     $('#startQLabel').textContent = live ? 'Queue Question' : 'Ask Question';
     $('#queueHint').hidden = !live;
@@ -399,25 +441,43 @@
     $('#queuedCard').hidden = !qd;
     if (!qd) return;
     $('#queuedText').textContent = qd.text;
-    $('#queuedMeta').textContent = `${qd.type === 'mcq' ? `${qd.options} options` : 'Text'} · ${qd.duration}s`;
-    const live = s.phase === 'live';
-    const auto = !!s.autoStartAt;
-    $('#queuedStatus').textContent = live
-      ? 'Sends automatically 5 seconds after time is up.'
-      : auto ? '' : 'On hold. Send it when you’re ready.';
-    $('#queuedHold').hidden = !auto;
-    $('#queuedSend').hidden = live;
+    $('#queuedMeta').textContent = `${qd.type === 'mcq' ? `${qd.options} options` : 'Text'} · ${fmtDur(qd.duration)}`;
+    $('#queuedStatus').textContent = s.students.length
+      ? 'Starts for each student the moment they finish what they’re on, with its own time limit.'
+      : 'Starts for each student as they join.';
+  }
+
+  function renderSwitcher(s) {
+    const nav = $('#qSwitch');
+    nav.replaceChildren(...s.questions.map((x, k) => {
+      const live = !x.closed && !x.pending;
+      return el('button', {
+        class: `q-chip${x.pending ? ' pending' : ''}`, type: 'button',
+        'aria-current': String(k === s.viewIndex),
+        'aria-label': `Question ${x.index}${x.closed ? ', finished' : x.pending ? ', queued' : `, live, ${x.on} answering`}`,
+        onclick: () => socket.emit('host:view', { index: k }),
+      }, live && el('span', { class: 'dot', 'aria-hidden': 'true' }), `Q${x.index}`, x.closed && icon('check'));
+    }));
+    const current = nav.querySelector('[aria-current="true"]');
+    if (current) current.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    $('#followLive').hidden = !s.pinned;
   }
 
   function renderLive(s, q) {
     const st = s.stats;
     const closed = q.closed;
-    $('#liveIndex').textContent = `Question ${q.index}`;
+    renderSwitcher(s);
+    $('#liveIndex').textContent = `Question ${q.index} · ${fmtDur(q.duration)}`;
     const phase = $('#livePhase');
-    phase.textContent = closed ? 'Results' : 'Live';
-    phase.classList.toggle('live', !closed);
+    phase.textContent = closed ? 'Results' : q.pending ? 'Queued' : 'Live';
+    phase.classList.toggle('live', !closed && !q.pending);
     $('#liveText').textContent = q.text;
-    $('#hostTimer').hidden = closed;
+    const answering = s.students.filter((x) => x.status === 'on').length;
+    const behind = s.students.filter((x) => x.status === 'behind').length;
+    $('#liveStatus').textContent = closed ? ''
+      : q.pending ? 'Nobody has reached this question yet.'
+      : [answering && `${answering} answering now`, behind && `${behind} still on an earlier question`].filter(Boolean).join(' · ');
+    $('#hostTimer').hidden = closed || !q.deadline;
     $('#endQ').hidden = closed;
 
     $('#tAnswered').textContent = `${st.answered}/${st.total}`;
@@ -465,7 +525,7 @@
       markFor(r.correct),
     )));
 
-    startTimer(q, $('#hostTimerFill'), $('#hostTimerNum'));
+    startTimer(closed ? null : q.deadline, q.duration, $('#hostTimerFill'), $('#hostTimerNum'));
   }
 
   function barRow({ i, text, count, total, correct, isText }) {
@@ -508,12 +568,20 @@
         sub = `“${st.answer}” · ${secs(st.timeMs)}`;
         right = markFor(st.correct) || el('span', { class: 'mark wait', text: 'Unmarked' });
       } else if (live) {
-        sub = st.answered ? `Answered · ${secs(st.timeMs)}` : 'Thinking…';
-        right = st.answered
-          ? el('span', { class: 'mark ok' }, icon('check'), 'In')
-          : el('span', { class: 'mark wait' }, icon('clock'));
+        if (st.status === 'answered') {
+          sub = `Answered · ${secs(st.timeMs)}`;
+          right = el('span', { class: 'mark ok' }, icon('check'), 'In');
+        } else if (st.status === 'on') {
+          sub = 'Answering…';
+          right = el('span', { class: 'mark wait' }, icon('clock'));
+        } else if (st.status === 'behind') {
+          sub = st.onIndex ? `On Q${st.onIndex}` : 'Waiting';
+        } else {
+          sub = 'No answer';
+          right = el('span', { class: 'mark wait', text: '–' });
+        }
       } else if (closed) {
-        if (!st.answered) sub = 'No answer';
+        if (!st.answered) sub = st.status === 'missed' ? 'No answer' : `${st.score} pts`;
         else if (q.type === 'mcq') sub = `${LETTERS[st.answer]} · ${q.options[st.answer]} · ${secs(st.timeMs)}`;
         right = markFor(st.correct);
       } else {
@@ -579,7 +647,7 @@
     $('#adWrong').setAttribute('aria-pressed', String(st.correct === false));
     $('#adNote').textContent = q.closed
       ? 'Scores update right away. Tap again to clear.'
-      : 'Points are added when time is up.';
+      : 'Points are added once everyone has finished this question.';
   }
 
   function stepAnswer(dir) {
@@ -595,7 +663,7 @@
     const value = st.correct === correct ? null : correct; // tap again to clear
     st.correct = value; // optimistic; server state follows
     renderAnswerDialog();
-    socket.emit('host:markAnswer', { studentId: st.id, correct: value });
+    socket.emit('host:markAnswer', { questionId: hostState.question.id, studentId: st.id, correct: value });
     haptic();
   }
 
@@ -624,18 +692,17 @@
   /* ---------------- shared countdown ---------------- */
 
   let timerRAF = null;
-  function startTimer(q, fill, num) {
+  function startTimer(endsAt, durationSec, fill, num) {
     cancelAnimationFrame(timerRAF);
-    if (!q || q.closed) return;
-    const total = q.duration * 1000;
+    if (!endsAt) return;
+    const total = durationSec * 1000;
     let lastSec = -1;
     const tick = () => {
-      const left = Math.max(0, q.endsAt - serverNow());
-      const frac = left / total;
-      fill.style.transform = `scaleX(${frac})`;
+      const left = Math.max(0, endsAt - serverNow());
+      fill.style.transform = `scaleX(${Math.min(1, left / total)})`;
       fill.classList.toggle('low', left <= 5000);
       const sec = Math.ceil(left / 1000);
-      if (num && sec !== lastSec) { num.textContent = sec; lastSec = sec; }
+      if (num && sec !== lastSec) { num.textContent = fmtClock(sec); lastSec = sec; }
       if (left > 0) timerRAF = requestAnimationFrame(tick);
     };
     tick();
@@ -648,6 +715,7 @@
   let studentState = null;
   let booting = false; // true while silently restoring a saved student session
   let renderedQuestionId = null;
+  let shownQuestionId = null; // last question actually displayed to answer
 
   const jName = $('#jName');
   const jCode = $('#jCode');
@@ -759,22 +827,24 @@
     $('#pCode').textContent = s.code;
 
     const q = s.question;
-    const view =
-      s.phase === 'compose' || !q ? 'pWait'
-      : q.closed ? 'pResult'
-      : s.myAnswer ? 'pLocked'
-      : 'pQuestion';
+    const view = q ? 'pQuestion' : s.last ? (s.last.result ? 'pResult' : 'pLocked') : 'pWait';
     ['pWait', 'pQuestion', 'pLocked', 'pResult'].forEach((id) => { $(`#${id}`).hidden = id !== view; });
 
     if (view === 'pQuestion') renderQuestion(q);
-    if (view === 'pLocked') renderLocked(q, s.myAnswer);
-    if (view === 'pResult') renderResult(s, q);
-    if (view !== 'pQuestion' && view !== 'pLocked') cancelAnimationFrame(timerRAF);
+    else cancelAnimationFrame(timerRAF);
+    if (view === 'pLocked') renderLocked(s.last);
+    if (view === 'pResult') renderResult(s, s.last.question, s.last.result);
   }
 
+  let lastSubmittedId = null;
   function renderQuestion(q) {
     if (renderedQuestionId !== q.id) {
+      // Moving straight from one question to the next: say why the screen changed.
+      if (shownQuestionId && shownQuestionId !== q.id) {
+        toast(lastSubmittedId === shownQuestionId ? 'Answer locked in. Next question!' : 'Time’s up! Next question.');
+      }
       renderedQuestionId = q.id;
+      shownQuestionId = q.id;
       // Reset controls from the previous question (the text form is reused, not rebuilt).
       submitting = false;
       $$('#pTextForm button').forEach((b) => { b.disabled = false; });
@@ -796,7 +866,7 @@
       }
       haptic(20);
     }
-    startTimer(q, $('#pTimerFill'), $('#pTimerNum'));
+    startTimer(q.endsAt, q.duration, $('#pTimerFill'), $('#pTimerNum'));
   }
 
   $('#pTextForm').addEventListener('submit', (e) => {
@@ -813,8 +883,11 @@
     submitting = true;
     $$('#pOptions .answer-btn, #pTextForm button').forEach((b) => { b.disabled = true; });
     haptic();
+    lastSubmittedId = q.id;
     socket.timeout(6000).emit('student:answer', { questionId: q.id, answer }, (err, res) => {
       submitting = false;
+      if (!err && res?.ok) return;
+      lastSubmittedId = null;
       if (err || !res?.ok) {
         $('#pError').textContent = err ? 'Connection problem — tap again.' : (res?.error || 'Could not send your answer.');
         $$('#pOptions .answer-btn, #pTextForm button').forEach((b) => { b.disabled = false; });
@@ -827,14 +900,20 @@
     return [el('span', { text: `“${answer}”` })];
   }
 
-  function renderLocked(q, mine) {
-    $('#pLockedAnswer').replaceChildren(...answerLabel(q, mine.answer));
-    $('#pLockedTime').textContent = `Answered in ${secs(mine.timeMs)} · waiting for time to run out`;
-    startTimer(q, $('#pLockFill'), null);
+  function renderLocked(last) {
+    const q = last.question;
+    const mine = last.myAnswer;
+    shownQuestionId = null;
+    $('#pLockedTitle').textContent = mine ? 'Answer locked in' : 'Time’s up';
+    $('#pLockedIcon').replaceChildren(icon(mine ? 'check' : 'clock'));
+    $('#pLockedAnswer').replaceChildren(...(mine ? answerLabel(q, mine.answer) : []));
+    $('#pLockedTime').textContent = mine
+      ? `Answered in ${secs(mine.timeMs)} · results show once everyone has finished`
+      : 'Results show once everyone has finished.';
   }
 
-  function renderResult(s, q) {
-    const r = s.result;
+  function renderResult(s, q, r) {
+    shownQuestionId = null;
     const iconEl = $('#rIcon');
     let title, iconName, cls, detail = '';
     const ungraded = r.answered && r.correct == null;
@@ -875,7 +954,16 @@
     const inTop = s.leaderboard.some((row) => row.id === s.me.id);
     $('#rMyRank').textContent = inTop ? '' : `You’re #${s.me.rank} of ${s.me.total} with ${s.me.score} pts`;
 
-    if (!s.nextAt) $('#rNext').textContent = 'Next question coming up…';
+    const hist = s.history || [];
+    $('#rHistoryWrap').hidden = hist.length < 2;
+    $('#rHistory').replaceChildren(...hist.map((h) => {
+      const cls = h.correct === true ? 'ok' : h.correct === false ? 'no' : '';
+      const label = !h.answered ? 'no answer' : h.correct === true ? `+${h.points}` : h.correct === false ? 'wrong' : 'not scored';
+      return el('li', { class: cls, 'aria-label': `Question ${h.index}: ${label}` },
+        `Q${h.index}`,
+        h.correct === true ? icon('check') : h.correct === false ? icon('x') : null,
+        h.correct === true ? `+${h.points}` : !h.answered ? '–' : '');
+    }));
 
     if (renderedQuestionId !== `${q.id}:r`) {
       renderedQuestionId = `${q.id}:r`;
