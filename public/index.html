@@ -260,6 +260,7 @@
               </button>
             </div>
             <div role="tabpanel" id="panelStudents" aria-labelledby="tabStudents">
+              <p class="mark-hint" id="markHint" hidden>Tap a student to read their answer and mark it.</p>
               <ul class="people" id="studentList"></ul>
               <p class="empty" id="studentsEmpty">Students appear here as they join.</p>
             </div>
@@ -393,6 +394,45 @@
       <p class="muted">Scan, or go to <strong id="presentUrl"></strong> and enter</p>
       <p class="room-code huge mono" translate="no" id="presentCode"></p>
       <p class="muted"><span class="mono" id="presentCount">0</span> joined</p>
+    </div>
+  </dialog>
+
+  <!-- Answer reader (text questions) -->
+  <dialog class="answer-dialog" id="answerDialog" aria-labelledby="adName">
+    <div class="ad-body">
+      <div class="ad-head">
+        <span class="avatar" id="adAvatar" aria-hidden="true"></span>
+        <div class="ad-who">
+          <h2 id="adName"></h2>
+          <span class="muted small" id="adMeta"></span>
+        </div>
+        <button class="icon-btn" type="button" id="adClose" aria-label="Close">
+          <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+        </button>
+      </div>
+      <p class="ad-question muted small" id="adQuestion"></p>
+      <label class="field">
+        <span class="label">Answer</span>
+        <textarea id="adAnswer" class="ad-answer" rows="4" readonly></textarea>
+      </label>
+      <div class="ad-marks" role="group" aria-label="Mark this answer">
+        <button class="mark-btn wrong" type="button" id="adWrong" aria-pressed="false">
+          <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg><span>Wrong</span>
+        </button>
+        <button class="mark-btn right" type="button" id="adCorrect" aria-pressed="false">
+          <svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>Correct</span>
+        </button>
+      </div>
+      <p class="hint center" id="adNote"></p>
+      <div class="ad-nav">
+        <button class="btn ghost" type="button" id="adPrev">
+          <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg><span>Previous</span>
+        </button>
+        <span class="muted small mono" id="adPos"></span>
+        <button class="btn ghost" type="button" id="adNext">
+          <span>Next</span><svg class="icon" aria-hidden="true"><use href="#i-arrow-right"/></svg>
+        </button>
+      </div>
     </div>
   </dialog>
 

@@ -417,15 +417,19 @@ io.on('connection', (socket) => {
     if (room) closeQuestion(room);
   });
 
-  socket.on('host:toggleCorrect', (data) => {
+  // Host marks a text answer right/wrong (during or after the question).
+  // `correct` is explicit so repeated taps can't flip it back.
+  socket.on('host:markAnswer', (data) => {
     const room = hostRoom();
     const q = room && currentQuestion(room);
-    if (!q || !q.closed || q.type !== 'text') return;
+    if (!q || q.type !== 'text' || room.phase === 'compose') return;
     const a = q.answers.get(data?.studentId);
     if (!a) return;
-    a.correct = !a.correct;
-    recomputeScores(room);
-    emitAll(room);
+    a.correct = data?.correct === null ? null : !!data?.correct;
+    if (q.closed) {
+      recomputeScores(room);
+      emitAll(room);
+    } else emitHost(room); // students learn the result when time is up
   });
 
   socket.on('host:kick', (data) => {

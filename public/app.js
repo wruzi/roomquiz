@@ -391,6 +391,7 @@
     if (!compose && q) renderLive(s, q);
     renderStudents(s, q);
     renderBoard(s);
+    if (answerDialog.open) renderAnswerDialog();
   }
 
   function renderQueued(s) {
@@ -497,10 +498,16 @@
     $('#studentsEmpty').hidden = s.students.length > 0;
     const live = q && !q.closed;
     const closed = q && q.closed;
+    const isText = q && q.type === 'text';
+    $('#markHint').hidden = !(isText && s.students.some((st) => st.answered));
     list.replaceChildren(...s.students.map((st) => {
       let sub;
       let right = null;
-      if (live) {
+      const readable = isText && st.answered;
+      if (readable) {
+        sub = `“${st.answer}” · ${secs(st.timeMs)}`;
+        right = markFor(st.correct) || el('span', { class: 'mark wait', text: 'Unmarked' });
+      } else if (live) {
         sub = st.answered ? `Answered · ${secs(st.timeMs)}` : 'Thinking…';
         right = st.answered
           ? el('span', { class: 'mark ok' }, icon('check'), 'In')
@@ -508,25 +515,27 @@
       } else if (closed) {
         if (!st.answered) sub = 'No answer';
         else if (q.type === 'mcq') sub = `${LETTERS[st.answer]} · ${q.options[st.answer]} · ${secs(st.timeMs)}`;
-        else sub = `“${st.answer}” · ${secs(st.timeMs)}`;
-        if (st.answered && q.type === 'text') {
-          right = el('button', {
-            class: 'toggle-correct', type: 'button', 'aria-pressed': String(!!st.correct),
-            'aria-label': `${st.correct ? 'Unmark' : 'Mark'} ${st.name}'s answer as correct`,
-            onclick: () => socket.emit('host:toggleCorrect', { studentId: st.id }),
-          }, st.correct ? 'Correct' : 'Mark correct');
-        } else right = markFor(st.correct);
+        right = markFor(st.correct);
       } else {
         sub = `${st.score} pts`;
       }
       if (!st.connected) sub = `Offline · ${sub}`;
-      return el('li', { class: st.connected ? '' : 'offline' },
+      const main = [
         el('span', { class: 'avatar', 'aria-hidden': 'true', text: initials(st.name) }),
         el('span', { class: 'person-main' },
           el('span', { class: 'name', text: st.name }),
           el('span', { class: 'person-sub', text: sub, title: sub }),
         ),
         right,
+      ];
+      return el('li', { class: `${st.connected ? '' : 'offline'}${readable ? ' readable' : ''}` },
+        readable
+          ? el('button', {
+            class: 'person-open', type: 'button',
+            'aria-label': `Read ${st.name}'s answer`,
+            onclick: () => openAnswer(st.id),
+          }, ...main)
+          : main,
         el('button', {
           class: 'kick', type: 'button', 'aria-label': `Remove ${st.name}`,
           onclick: async () => {
@@ -538,6 +547,69 @@
       );
     }));
   }
+
+  /* ---- answer reader (text questions) ---- */
+
+  const answerDialog = $('#answerDialog');
+  let readingId = null;
+
+  const readableStudents = () => (hostState?.students || []).filter((st) => st.answered);
+
+  function openAnswer(id) {
+    readingId = id;
+    renderAnswerDialog();
+    if (!answerDialog.open) answerDialog.showModal();
+  }
+
+  function renderAnswerDialog() {
+    const q = hostState?.question;
+    const list = readableStudents();
+    const idx = list.findIndex((st) => st.id === readingId);
+    if (!q || q.type !== 'text' || idx === -1) { if (answerDialog.open) answerDialog.close(); return; }
+    const st = list[idx];
+    $('#adName').textContent = st.name;
+    $('#adAvatar').textContent = initials(st.name);
+    $('#adMeta').textContent = `Answered in ${secs(st.timeMs)}`;
+    $('#adQuestion').textContent = q.text;
+    $('#adAnswer').value = st.answer;
+    $('#adPos').textContent = `${idx + 1} of ${list.length}`;
+    $('#adPrev').disabled = idx === 0;
+    $('#adNext').disabled = idx === list.length - 1;
+    $('#adCorrect').setAttribute('aria-pressed', String(st.correct === true));
+    $('#adWrong').setAttribute('aria-pressed', String(st.correct === false));
+    $('#adNote').textContent = q.closed
+      ? 'Scores update right away. Tap again to clear.'
+      : 'Points are added when time is up.';
+  }
+
+  function stepAnswer(dir) {
+    const list = readableStudents();
+    const idx = list.findIndex((st) => st.id === readingId);
+    const next = list[idx + dir];
+    if (next) { readingId = next.id; renderAnswerDialog(); }
+  }
+
+  function markCurrent(correct) {
+    const st = readableStudents().find((x) => x.id === readingId);
+    if (!st) return;
+    const value = st.correct === correct ? null : correct; // tap again to clear
+    st.correct = value; // optimistic; server state follows
+    renderAnswerDialog();
+    socket.emit('host:markAnswer', { studentId: st.id, correct: value });
+    haptic();
+  }
+
+  $('#adCorrect').addEventListener('click', () => markCurrent(true));
+  $('#adWrong').addEventListener('click', () => markCurrent(false));
+  $('#adPrev').addEventListener('click', () => stepAnswer(-1));
+  $('#adNext').addEventListener('click', () => stepAnswer(1));
+  $('#adClose').addEventListener('click', () => answerDialog.close());
+  answerDialog.addEventListener('click', (e) => { if (e.target === answerDialog) answerDialog.close(); });
+  answerDialog.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight') { e.preventDefault(); stepAnswer(1); }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); stepAnswer(-1); }
+  });
+  answerDialog.addEventListener('close', () => { readingId = null; });
 
   function renderBoard(s) {
     const anyScore = s.leaderboard.some((r) => r.score > 0);
