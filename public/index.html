@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f7f5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+  <title>Roomquiz</title>
+  <script>
+    // Apply saved theme before paint to avoid a flash.
+    (function () {
+      try {
+        var t = localStorage.getItem('rq-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <!-- Icon sprite (Lucide-style, 2px stroke) -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+      <symbol id="i-host" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+      <symbol id="i-student" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></symbol>
+      <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7M19 12H5"/></symbol>
+      <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+      <symbol id="i-qr" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v.01M14 20h.01M17 20h4v-3"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+      <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+      <symbol id="i-trophy" viewBox="0 0 24 24"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22M18 2H6v7a6 6 0 0 0 12 0V2Z"/></symbol>
+      <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></symbol>
+      <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></symbol>
+      <symbol id="i-maximize" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></symbol>
+      <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+      <symbol id="i-type" viewBox="0 0 24 24"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></symbol>
+      <symbol id="i-wifi-off" viewBox="0 0 24 24"><path d="M2 2l20 20M8.5 16.5a5 5 0 0 1 7 0M2 8.82a15 15 0 0 1 4.17-2.65M10.66 5c4.01-.36 8.14.9 11.34 3.76M16.85 11.25a10 10 0 0 1 2.22 1.68M5 13a10 10 0 0 1 5.24-2.76M12 20h.01"/></symbol>
+    </defs>
+  </svg>
+
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="topbar">
+    <button class="brand" id="brand" type="button" aria-label="Roomquiz home">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span translate="no">Roomquiz</span>
+    </button>
+    <div class="topbar-right">
+      <span class="conn" id="conn" hidden role="status">
+        <svg class="icon" aria-hidden="true"><use href="#i-wifi-off"/></svg>
+        <span>Reconnecting…</span>
+      </span>
+      <button class="icon-btn" id="themeToggle" type="button" aria-label="Switch to dark theme">
+        <svg class="icon icon-sun" aria-hidden="true"><use href="#i-sun"/></svg>
+        <svg class="icon icon-moon" aria-hidden="true"><use href="#i-moon"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+
+    <!-- ============ HOME ============ -->
+    <section class="screen" data-screen="home" hidden>
+      <div class="home">
+        <div class="home-head">
+          <h1>Live quiz for your class</h1>
+          <p class="muted">Ask a question, see answers arrive in real time.</p>
+        </div>
+        <div class="role-grid">
+          <button class="role-card" type="button" data-go="host">
+            <span class="role-icon" aria-hidden="true"><svg class="icon"><use href="#i-host"/></svg></span>
+            <span class="role-text">
+              <span class="role-title">Host</span>
+              <span class="role-sub">Create a room and ask questions</span>
+            </span>
+            <svg class="icon role-arrow" aria-hidden="true"><use href="#i-arrow-right"/></svg>
+          </button>
+          <button class="role-card" type="button" data-go="join">
+            <span class="role-icon" aria-hidden="true"><svg class="icon"><use href="#i-student"/></svg></span>
+            <span class="role-text">
+              <span class="role-title">Student</span>
+              <span class="role-sub">Join with a code or QR</span>
+            </span>
+            <svg class="icon role-arrow" aria-hidden="true"><use href="#i-arrow-right"/></svg>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ HOST: CREATE ============ -->
+    <section class="screen" data-screen="host" hidden>
+      <div class="narrow">
+        <button class="back" type="button" data-go="home">
+          <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Back
+        </button>
+        <div class="card center-card">
+          <span class="role-icon lg" aria-hidden="true"><svg class="icon"><use href="#i-host"/></svg></span>
+          <h1>Host a room</h1>
+          <p class="muted">You'll get a 6-character code and QR for students to join.</p>
+          <button class="btn primary block" id="createRoom" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+            <span>Create Room</span>
+          </button>
+          <button class="btn ghost block" id="resumeRoom" type="button" hidden>Return to Room <span class="mono" id="resumeCode"></span></button>
+          <p class="error" id="createError" role="alert"></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ HOST: ROOM ============ -->
+    <section class="screen" data-screen="room" hidden>
+      <div class="room">
+        <!-- Join strip -->
+        <div class="card joinbar">
+          <button class="qr-thumb" id="qrThumb" type="button" aria-label="Show large QR code"></button>
+          <div class="joinbar-text">
+            <span class="label">Room code</span>
+            <span class="room-code mono" translate="no" id="roomCode">------</span>
+            <span class="muted small truncate" id="joinUrl"></span>
+          </div>
+          <div class="joinbar-actions">
+            <button class="icon-btn" id="copyLink" type="button" aria-label="Copy join link">
+              <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+            </button>
+            <button class="icon-btn" id="presentQr" type="button" aria-label="Present join screen">
+              <svg class="icon" aria-hidden="true"><use href="#i-maximize"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="room-grid">
+          <div class="room-main">
+
+            <!-- Compose -->
+            <form class="card" id="composeCard" novalidate hidden>
+              <div class="card-head">
+                <h2 id="composeTitle">Question 1</h2>
+              </div>
+
+              <label class="field">
+                <span class="label">Question</span>
+                <textarea id="qText" name="question" rows="2" maxlength="300" placeholder="e.g. What is the capital of Japan…" required></textarea>
+              </label>
+
+              <div class="field">
+                <span class="label" id="typeLabel">Answer type</span>
+                <div class="segmented" role="radiogroup" aria-labelledby="typeLabel">
+                  <label><input type="radio" name="qType" value="mcq" checked><span><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg>Options</span></label>
+                  <label><input type="radio" name="qType" value="text"><span><svg class="icon" aria-hidden="true"><use href="#i-type"/></svg>Text</span></label>
+                </div>
+              </div>
+
+              <fieldset class="field" id="optionsField">
+                <legend class="label">Options <span class="muted">· select the correct one</span></legend>
+                <div class="options-edit" id="optionsEdit"></div>
+              </fieldset>
+
+              <label class="field" id="acceptedField" hidden>
+                <span class="label">Accepted answers <span class="muted">· optional</span></span>
+                <input id="qAccepted" name="accepted" type="text" maxlength="300" autocomplete="off" placeholder="e.g. Tokyo, Tokio…">
+                <span class="hint">Comma separated, not case sensitive. Leave empty for an open question — you can mark answers correct afterwards.</span>
+              </label>
+
+              <div class="field">
+                <div class="row-between">
+                  <label class="label" for="qTime">Time limit</label>
+                  <output class="mono strong" id="qTimeOut" for="qTime">20s</output>
+                </div>
+                <input id="qTime" type="range" min="10" max="60" step="5" value="20">
+                <div class="row-between muted small" aria-hidden="true"><span>10s</span><span>60s</span></div>
+              </div>
+
+              <p class="error" id="composeError" role="alert"></p>
+              <button class="btn primary block" id="startQ" type="submit">
+                <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg>
+                <span>Ask Question</span>
+              </button>
+              <p class="hint center" id="noStudentsHint" hidden>No students yet — share the code above.</p>
+            </form>
+
+            <!-- Live / results -->
+            <div class="card" id="liveCard" hidden>
+              <div class="card-head">
+                <span class="label" id="liveIndex">Question 1</span>
+                <span class="pill" id="livePhase"></span>
+              </div>
+              <h2 class="question-text" id="liveText"></h2>
+
+              <div class="timer" id="hostTimer">
+                <div class="timer-track"><div class="timer-fill" id="hostTimerFill"></div></div>
+                <span class="timer-num mono" id="hostTimerNum">0</span>
+              </div>
+
+              <div class="tiles">
+                <div class="tile"><span class="tile-label">Answered</span><span class="tile-value mono" id="tAnswered">0/0</span></div>
+                <div class="tile"><span class="tile-label">Avg. time</span><span class="tile-value mono" id="tAvg">–</span></div>
+                <div class="tile" id="tCorrectTile"><span class="tile-label">Correct</span><span class="tile-value mono" id="tCorrect">–</span></div>
+              </div>
+
+              <div class="section">
+                <h3 class="section-title" id="chartTitle">Answers</h3>
+                <div class="bars" id="bars" role="list"></div>
+                <p class="muted small" id="barsEmpty">Waiting for the first answer…</p>
+              </div>
+
+              <div class="section">
+                <h3 class="section-title"><svg class="icon" aria-hidden="true"><use href="#i-zap"/></svg><span id="fastTitle">Quickest</span></h3>
+                <ol class="podium" id="podium"></ol>
+                <p class="muted small" id="podiumEmpty">No one yet.</p>
+              </div>
+
+              <div class="section" id="rankingSection" hidden>
+                <h3 class="section-title">This question</h3>
+                <ol class="rank-list" id="qRanking"></ol>
+              </div>
+
+              <div class="actions">
+                <button class="btn ghost block" id="endQ" type="button">
+                  <svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg><span>End Now</span>
+                </button>
+                <button class="btn primary block" id="nextQ" type="button" hidden>
+                  <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>Next Question</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Side panel -->
+          <aside class="card room-side" aria-label="Students and leaderboard">
+            <div class="tabs" role="tablist">
+              <button role="tab" id="tabStudents" aria-selected="true" aria-controls="panelStudents" type="button">
+                <svg class="icon" aria-hidden="true"><use href="#i-users"/></svg>Students <span class="count mono" id="studentCount">0</span>
+              </button>
+              <button role="tab" id="tabBoard" aria-selected="false" aria-controls="panelBoard" type="button" tabindex="-1">
+                <svg class="icon" aria-hidden="true"><use href="#i-trophy"/></svg>Leaderboard
+              </button>
+            </div>
+            <div role="tabpanel" id="panelStudents" aria-labelledby="tabStudents">
+              <ul class="people" id="studentList"></ul>
+              <p class="empty" id="studentsEmpty">Students appear here as they join.</p>
+            </div>
+            <div role="tabpanel" id="panelBoard" aria-labelledby="tabBoard" hidden>
+              <ol class="rank-list" id="boardList"></ol>
+              <p class="empty" id="boardEmpty">Scores show up after the first question.</p>
+            </div>
+          </aside>
+        </div>
+
+        <button class="btn danger-ghost" id="closeRoom" type="button">
+          <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg><span>Close Room</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- ============ STUDENT: JOIN ============ -->
+    <section class="screen" data-screen="join" hidden>
+      <div class="narrow">
+        <button class="back" type="button" data-go="home">
+          <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Back
+        </button>
+        <form class="card" id="joinForm" novalidate>
+          <h1>Join a room</h1>
+          <label class="field">
+            <span class="label">Your name</span>
+            <input id="jName" name="nickname" type="text" maxlength="24" autocomplete="nickname" autocapitalize="words" enterkeyhint="next" required aria-describedby="jNameErr">
+            <span class="error" id="jNameErr" role="alert"></span>
+          </label>
+          <label class="field">
+            <span class="label">Room code</span>
+            <input id="jCode" name="room" class="code-input mono" type="text" maxlength="6" inputmode="text" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="go" placeholder="ABC123" required aria-describedby="jCodeErr">
+            <span class="error" id="jCodeErr" role="alert"></span>
+          </label>
+          <button class="btn primary block" id="joinBtn" type="submit">
+            <span>Join</span><svg class="icon" aria-hidden="true"><use href="#i-arrow-right"/></svg>
+          </button>
+        </form>
+      </div>
+    </section>
+
+    <!-- ============ STUDENT: PLAY ============ -->
+    <section class="screen" data-screen="play" hidden>
+      <div class="play">
+        <div class="play-head">
+          <span class="me"><span class="avatar" id="meAvatar" aria-hidden="true"></span><span id="meName"></span></span>
+          <span class="me-score"><span class="mono strong" id="meScore">0</span> pts<span class="muted" id="meRank"></span></span>
+        </div>
+
+        <!-- Waiting -->
+        <div class="card play-card center-card" id="pWait" hidden>
+          <span class="pulse" aria-hidden="true"></span>
+          <h1>You're in</h1>
+          <p class="muted">Waiting for the host to ask a question. Keep this screen open.</p>
+          <p class="muted small">Room <span class="mono" translate="no" id="pCode"></span></p>
+        </div>
+
+        <!-- Question -->
+        <div class="play-card" id="pQuestion" hidden>
+          <div class="timer">
+            <div class="timer-track"><div class="timer-fill" id="pTimerFill"></div></div>
+            <span class="timer-num mono" id="pTimerNum">0</span>
+          </div>
+          <p class="label" id="pIndex"></p>
+          <h1 class="question-text" id="pText"></h1>
+          <div class="answer-grid" id="pOptions"></div>
+          <form class="text-answer" id="pTextForm" novalidate hidden>
+            <label class="field">
+              <span class="label">Your answer</span>
+              <input id="pTextInput" name="answer" type="text" maxlength="200" autocomplete="off" enterkeyhint="send" required>
+            </label>
+            <button class="btn primary block" type="submit">
+              <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg><span>Submit</span>
+            </button>
+          </form>
+          <p class="error center" id="pError" role="alert"></p>
+        </div>
+
+        <!-- Answered -->
+        <div class="card play-card center-card" id="pLocked" hidden>
+          <div class="timer slim">
+            <div class="timer-track"><div class="timer-fill" id="pLockFill"></div></div>
+          </div>
+          <span class="badge-icon neutral" aria-hidden="true"><svg class="icon"><use href="#i-check"/></svg></span>
+          <h1>Answer locked in</h1>
+          <p class="locked-answer" id="pLockedAnswer"></p>
+          <p class="muted small" id="pLockedTime"></p>
+        </div>
+
+        <!-- Result -->
+        <div class="card play-card center-card" id="pResult" hidden>
+          <span class="badge-icon" id="rIcon" aria-hidden="true"><svg class="icon"><use href="#i-check"/></svg></span>
+          <h1 id="rTitle"></h1>
+          <p class="points mono" id="rPoints"></p>
+          <p class="muted" id="rDetail"></p>
+          <div class="answer-reveal" id="rAnswer"></div>
+          <div class="section">
+            <h2 class="section-title"><svg class="icon" aria-hidden="true"><use href="#i-trophy"/></svg>Leaderboard</h2>
+            <ol class="rank-list" id="rBoard"></ol>
+            <p class="muted small" id="rMyRank"></p>
+          </div>
+          <p class="muted small">Next question coming up…</p>
+        </div>
+
+        <button class="btn danger-ghost" id="leaveRoom" type="button">
+          <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg><span>Leave Room</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- ============ CLOSED ============ -->
+    <section class="screen" data-screen="closed" hidden>
+      <div class="narrow">
+        <div class="card center-card">
+          <h1 id="closedTitle">Room closed</h1>
+          <p class="muted" id="closedMsg">The host has ended this session.</p>
+          <button class="btn primary block" type="button" data-go="home">Back to Start</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Present / QR dialog -->
+  <dialog class="present" id="presentDialog" aria-labelledby="presentTitle">
+    <button class="icon-btn present-close" type="button" id="presentClose" aria-label="Close">
+      <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+    </button>
+    <div class="present-body">
+      <h2 id="presentTitle">Join the quiz</h2>
+      <div class="qr-big" id="qrBig"></div>
+      <p class="muted">Scan, or go to <strong id="presentUrl"></strong> and enter</p>
+      <p class="room-code huge mono" translate="no" id="presentCode"></p>
+      <p class="muted"><span class="mono" id="presentCount">0</span> joined</p>
+    </div>
+  </dialog>
+
+  <!-- Confirm dialog -->
+  <dialog class="confirm" id="confirmDialog" aria-labelledby="confirmTitle">
+    <form method="dialog">
+      <h2 id="confirmTitle">Are you sure?</h2>
+      <p class="muted" id="confirmMsg"></p>
+      <div class="confirm-actions">
+        <button class="btn ghost" value="cancel">Cancel</button>
+        <button class="btn danger" value="ok" id="confirmOk">Confirm</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
