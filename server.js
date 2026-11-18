@@ -195,6 +195,10 @@ function hostState(room) {
       ? questionRanking(live).map((r) => ({ name: room.students.get(r.sid)?.name || '—', timeMs: r.timeMs, correct: r.correct }))
       : [],
     leaderboard: lb,
+    queued: room.queued
+      ? { text: room.queued.text, type: room.queued.type, options: room.queued.options.length, duration: room.queued.duration }
+      : null,
+    autoStartAt: room.autoStartAt || null,
     serverNow: Date.now(),
   };
 }
@@ -225,6 +229,7 @@ function studentState(room, s) {
     myAnswer: a ? { answer: a.answer, timeMs: a.timeMs } : null,
     result,
     leaderboard: lb.slice(0, 5).map(({ id, name, score, rank }) => ({ id, name, score, rank })),
+    nextAt: room.autoStartAt || null,
     serverNow: Date.now(),
   };
 }
@@ -245,6 +250,54 @@ function emitAll(room) {
 
 /* ---------------- question lifecycle ---------------- */
 
+const AUTO_START_MS = 5000; // results break before a queued question starts
+
+// Validate host input into a question spec, or { error }.
+function parseQuestion(data) {
+  const type = data?.type === 'text' ? 'text' : 'mcq';
+  const text = clean(data?.text, 300);
+  if (!text) return { error: 'Write a question first.' };
+  const duration = Math.min(MAX_TIME, Math.max(MIN_TIME, Math.round(Number(data?.duration) || 20)));
+  const spec = { type, text, duration, options: [], correct: null, accepted: [], acceptedRaw: '' };
+  if (type === 'mcq') {
+    spec.options = (Array.isArray(data?.options) ? data.options : []).slice(0, 4).map((o) => clean(o, 120));
+    if (spec.options.length < 2 || spec.options.some((o) => !o)) return { error: 'Fill in at least 2 options.' };
+    spec.correct = Number(data?.correct);
+    if (!Number.isInteger(spec.correct) || spec.correct < 0 || spec.correct >= spec.options.length) {
+      return { error: 'Choose the correct option.' };
+    }
+  } else {
+    spec.acceptedRaw = clean(data?.accepted, 300);
+    spec.accepted = spec.acceptedRaw.split(',').map(norm).filter(Boolean);
+  }
+  return spec;
+}
+
+function cancelAutoStart(room) {
+  clearTimeout(room.autoTimer);
+  room.autoTimer = null;
+  room.autoStartAt = null;
+}
+
+function startQuestion(room, spec) {
+  cancelAutoStart(room);
+  if (room.queued === spec) room.queued = null;
+  const now = Date.now();
+  const q = {
+    ...spec,
+    id: token().slice(0, 8),
+    index: room.questions.length + 1,
+    startedAt: now,
+    endsAt: now + spec.duration * 1000,
+    answers: new Map(),
+    closed: false,
+  };
+  q.timer = setTimeout(() => closeQuestion(room), spec.duration * 1000 + 300);
+  room.questions.push(q);
+  room.phase = 'live';
+  emitAll(room);
+}
+
 function closeQuestion(room) {
   const q = currentQuestion(room);
   if (!q || q.closed) return;
@@ -254,6 +307,10 @@ function closeQuestion(room) {
   q.endsAt = Math.min(q.endsAt, Date.now());
   room.phase = 'results';
   recomputeScores(room);
+  if (room.queued) {
+    room.autoStartAt = Date.now() + AUTO_START_MS;
+    room.autoTimer = setTimeout(() => room.queued && startQuestion(room, room.queued), AUTO_START_MS);
+  }
   emitAll(room);
 }
 
@@ -287,6 +344,9 @@ io.on('connection', (socket) => {
       phase: 'compose',
       students: new Map(),
       questions: [],
+      queued: null,
+      autoStartAt: null,
+      autoTimer: null,
       touched: Date.now(),
     };
     rooms.set(code, room);
@@ -315,64 +375,46 @@ io.on('connection', (socket) => {
   socket.on('host:start', (data, fn) => {
     const room = hostRoom();
     if (!room) return ack(fn, { ok: false, error: 'Room not found.' });
-    if (room.phase === 'live') return ack(fn, { ok: false, error: 'A question is already running.' });
-
-    const type = data?.type === 'text' ? 'text' : 'mcq';
-    const text = clean(data?.text, 300);
-    if (!text) return ack(fn, { ok: false, error: 'Write a question first.' });
-    const duration = Math.min(MAX_TIME, Math.max(MIN_TIME, Math.round(Number(data?.duration) || 20)));
-
-    let options = [];
-    let correct = null;
-    let accepted = [];
-    let acceptedRaw = '';
-    if (type === 'mcq') {
-      options = (Array.isArray(data?.options) ? data.options : []).slice(0, 4).map((o) => clean(o, 120));
-      if (options.length < 2 || options.some((o) => !o)) {
-        return ack(fn, { ok: false, error: 'Fill in at least 2 options.' });
-      }
-      correct = Number(data?.correct);
-      if (!Number.isInteger(correct) || correct < 0 || correct >= options.length) {
-        return ack(fn, { ok: false, error: 'Choose the correct option.' });
-      }
-    } else {
-      acceptedRaw = clean(data?.accepted, 300);
-      accepted = acceptedRaw.split(',').map(norm).filter(Boolean);
+    const spec = parseQuestion(data);
+    if (spec.error) return ack(fn, { ok: false, error: spec.error });
+    if (room.phase === 'live') {
+      // A question is running: hold this one and send it when time is up.
+      room.queued = spec;
+      ack(fn, { ok: true, queued: true });
+      emitHost(room);
+      return;
     }
-
-    const now = Date.now();
-    const q = {
-      id: token().slice(0, 8),
-      index: room.questions.length + 1,
-      text,
-      type,
-      options,
-      correct,
-      accepted,
-      acceptedRaw,
-      duration,
-      startedAt: now,
-      endsAt: now + duration * 1000,
-      answers: new Map(),
-      closed: false,
-    };
-    q.timer = setTimeout(() => closeQuestion(room), duration * 1000 + 300);
-    room.questions.push(q);
-    room.phase = 'live';
+    startQuestion(room, spec);
     ack(fn, { ok: true });
+  });
+
+  // Take the queued question back out (to edit or discard it).
+  socket.on('host:unqueue', (_data, fn) => {
+    const room = hostRoom();
+    if (!room) return ack(fn, { ok: false });
+    const spec = room.queued;
+    cancelAutoStart(room);
+    room.queued = null;
+    ack(fn, { ok: true, spec });
+    emitAll(room);
+  });
+
+  socket.on('host:sendQueued', () => {
+    const room = hostRoom();
+    if (!room || !room.queued || room.phase === 'live') return;
+    startQuestion(room, room.queued);
+  });
+
+  socket.on('host:hold', () => {
+    const room = hostRoom();
+    if (!room) return;
+    cancelAutoStart(room);
     emitAll(room);
   });
 
   socket.on('host:end', () => {
     const room = hostRoom();
     if (room) closeQuestion(room);
-  });
-
-  socket.on('host:next', () => {
-    const room = hostRoom();
-    if (!room || room.phase === 'live') return;
-    room.phase = 'compose';
-    emitAll(room);
   });
 
   socket.on('host:toggleCorrect', (data) => {
@@ -402,6 +444,7 @@ io.on('connection', (socket) => {
     if (!room) return;
     const q = currentQuestion(room);
     if (q) clearTimeout(q.timer);
+    cancelAutoStart(room);
     io.to(`room:${room.code}`).emit('room:closed');
     rooms.delete(room.code);
   });

@@ -267,17 +267,57 @@
       setLoading(btn, false);
       if (e2) { err.textContent = 'No response from server. Try again.'; return; }
       if (!res?.ok) { err.textContent = res?.error || 'Could not start the question.'; return; }
-      // Clear for the next question, keep type & timer.
-      $('#qText').value = '';
-      [0, 1, 2, 3].forEach((i) => { $(`#opt${i}`).value = ''; });
-      $('#qAccepted').value = '';
-      $('input[name="qCorrect"][value="0"]').checked = true;
+      clearForm();
+      if (res.queued) toast('Queued. It will be sent when time is up.');
       haptic();
     });
   });
 
+  // Clear for the next question, keep type & timer.
+  function clearForm() {
+    $('#qText').value = '';
+    [0, 1, 2, 3].forEach((i) => { $(`#opt${i}`).value = ''; });
+    $('#qAccepted').value = '';
+    $('input[name="qCorrect"][value="0"]').checked = true;
+  }
+
+  function fillForm(spec) {
+    $('#qText').value = spec.text;
+    const radio = $(`input[name="qType"][value="${spec.type}"]`);
+    radio.checked = true;
+    radio.dispatchEvent(new Event('change'));
+    [0, 1, 2, 3].forEach((i) => { $(`#opt${i}`).value = spec.options[i] || ''; });
+    $(`input[name="qCorrect"][value="${spec.correct ?? 0}"]`).checked = true;
+    $('#qAccepted').value = spec.acceptedRaw || '';
+    qTime.value = spec.duration;
+    syncTime();
+  }
+
+  function unqueue(edit) {
+    socket.timeout(6000).emit('host:unqueue', {}, (err, res) => {
+      if (err || !res?.ok) return toast('Could not reach the server. Try again.');
+      if (edit && res.spec) {
+        fillForm(res.spec);
+        setTimeout(() => $('#qText').focus(), 50);
+      }
+    });
+  }
+  $('#queuedEdit').addEventListener('click', () => unqueue(true));
+  $('#queuedRemove').addEventListener('click', () => unqueue(false));
+  $('#queuedHold').addEventListener('click', () => socket.emit('host:hold'));
+  $('#queuedSend').addEventListener('click', () => socket.emit('host:sendQueued'));
+
+  // Countdown text for an auto-starting queued question (host + student).
+  setInterval(() => {
+    const at = mode === 'host' ? hostState?.autoStartAt : mode === 'student' ? studentState?.nextAt : null;
+    if (!at) return;
+    const left = Math.max(0, Math.ceil((at - serverNow()) / 1000));
+    const msg = `Next question in ${left}s`;
+    if (mode === 'host') $('#queuedStatus').textContent = `${msg}. Tap Hold to wait.`;
+    else $('#rNext').textContent = `${msg}…`;
+  }, 250);
+
   $('#endQ').addEventListener('click', () => socket.emit('host:end'));
-  $('#nextQ').addEventListener('click', () => socket.emit('host:next'));
 
   $('#copyLink').addEventListener('click', async () => {
     try {
@@ -332,9 +372,14 @@
     const q = s.question;
     const compose = s.phase === 'compose';
 
-    $('#composeCard').hidden = !compose;
+    const live = s.phase === 'live';
+    // One queue slot: while a question is queued, the form is replaced by the "Up next" card.
+    $('#composeCard').hidden = !!s.queued;
     $('#liveCard').hidden = compose;
-    $('#composeTitle').textContent = `Question ${s.questionCount + 1}`;
+    $('#composeTitle').textContent = live ? 'Prepare the next question' : `Question ${s.questionCount + 1}`;
+    $('#startQLabel').textContent = live ? 'Queue Question' : 'Ask Question';
+    $('#queueHint').hidden = !live;
+    renderQueued(s);
     $('#noStudentsHint').hidden = s.students.length > 0;
     $('#studentCount').textContent = s.students.length;
     $('#presentCount').textContent = s.students.length;
@@ -348,6 +393,21 @@
     renderBoard(s);
   }
 
+  function renderQueued(s) {
+    const qd = s.queued;
+    $('#queuedCard').hidden = !qd;
+    if (!qd) return;
+    $('#queuedText').textContent = qd.text;
+    $('#queuedMeta').textContent = `${qd.type === 'mcq' ? `${qd.options} options` : 'Text'} · ${qd.duration}s`;
+    const live = s.phase === 'live';
+    const auto = !!s.autoStartAt;
+    $('#queuedStatus').textContent = live
+      ? 'Sends automatically 5 seconds after time is up.'
+      : auto ? '' : 'On hold. Send it when you’re ready.';
+    $('#queuedHold').hidden = !auto;
+    $('#queuedSend').hidden = live;
+  }
+
   function renderLive(s, q) {
     const st = s.stats;
     const closed = q.closed;
@@ -358,7 +418,6 @@
     $('#liveText').textContent = q.text;
     $('#hostTimer').hidden = closed;
     $('#endQ').hidden = closed;
-    $('#nextQ').hidden = !closed;
 
     $('#tAnswered').textContent = `${st.answered}/${st.total}`;
     $('#tAvg').textContent = st.answered ? secs(st.avgMs) : '–';
@@ -740,6 +799,8 @@
     )));
     const inTop = s.leaderboard.some((row) => row.id === s.me.id);
     $('#rMyRank').textContent = inTop ? '' : `You’re #${s.me.rank} of ${s.me.total} with ${s.me.score} pts`;
+
+    if (!s.nextAt) $('#rNext').textContent = 'Next question coming up…';
 
     if (renderedQuestionId !== `${q.id}:r`) {
       renderedQuestionId = `${q.id}:r`;

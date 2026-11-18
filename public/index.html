@@ -139,6 +139,66 @@
         <div class="room-grid">
           <div class="room-main">
 
+            <!-- Live / results -->
+            <div class="card" id="liveCard" hidden>
+              <div class="card-head">
+                <span class="label" id="liveIndex">Question 1</span>
+                <span class="pill" id="livePhase"></span>
+              </div>
+              <h2 class="question-text" id="liveText"></h2>
+
+              <div class="timer" id="hostTimer">
+                <div class="timer-track"><div class="timer-fill" id="hostTimerFill"></div></div>
+                <span class="timer-num mono" id="hostTimerNum">0</span>
+              </div>
+
+              <div class="tiles">
+                <div class="tile"><span class="tile-label">Answered</span><span class="tile-value mono" id="tAnswered">0/0</span></div>
+                <div class="tile"><span class="tile-label">Avg. time</span><span class="tile-value mono" id="tAvg">–</span></div>
+                <div class="tile" id="tCorrectTile"><span class="tile-label">Correct</span><span class="tile-value mono" id="tCorrect">–</span></div>
+              </div>
+
+              <div class="section">
+                <h3 class="section-title" id="chartTitle">Answers</h3>
+                <div class="bars" id="bars" role="list"></div>
+                <p class="muted small" id="barsEmpty">Waiting for the first answer…</p>
+              </div>
+
+              <div class="section">
+                <h3 class="section-title"><svg class="icon" aria-hidden="true"><use href="#i-zap"/></svg><span id="fastTitle">Quickest</span></h3>
+                <ol class="podium" id="podium"></ol>
+                <p class="muted small" id="podiumEmpty">No one yet.</p>
+              </div>
+
+              <div class="section" id="rankingSection" hidden>
+                <h3 class="section-title">This question</h3>
+                <ol class="rank-list" id="qRanking"></ol>
+              </div>
+
+              <div class="actions">
+                <button class="btn ghost block" id="endQ" type="button">
+                  <svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg><span>End Now</span>
+                </button>
+              </div>
+            </div>
+            <!-- Queued (up next) -->
+            <div class="card queued" id="queuedCard" hidden aria-live="polite">
+              <div class="card-head">
+                <span class="label">Up next</span>
+                <span class="pill" id="queuedMeta"></span>
+              </div>
+              <p class="queued-text" id="queuedText"></p>
+              <p class="queued-status" id="queuedStatus"></p>
+              <div class="queued-actions">
+                <button class="btn ghost" id="queuedEdit" type="button">Edit</button>
+                <button class="btn ghost" id="queuedHold" type="button" hidden>Hold</button>
+                <button class="btn primary" id="queuedSend" type="button" hidden>
+                  <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg><span>Send Now</span>
+                </button>
+                <button class="btn ghost" id="queuedRemove" type="button">Remove</button>
+              </div>
+            </div>
+
             <!-- Compose -->
             <form class="card" id="composeCard" novalidate hidden>
               <div class="card-head">
@@ -181,56 +241,12 @@
               <p class="error" id="composeError" role="alert"></p>
               <button class="btn primary block" id="startQ" type="submit">
                 <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg>
-                <span>Ask Question</span>
+                <span id="startQLabel">Ask Question</span>
               </button>
+              <p class="hint center" id="queueHint" hidden>It will be sent automatically 5 seconds after the current question ends.</p>
               <p class="hint center" id="noStudentsHint" hidden>No students yet — share the code above.</p>
             </form>
 
-            <!-- Live / results -->
-            <div class="card" id="liveCard" hidden>
-              <div class="card-head">
-                <span class="label" id="liveIndex">Question 1</span>
-                <span class="pill" id="livePhase"></span>
-              </div>
-              <h2 class="question-text" id="liveText"></h2>
-
-              <div class="timer" id="hostTimer">
-                <div class="timer-track"><div class="timer-fill" id="hostTimerFill"></div></div>
-                <span class="timer-num mono" id="hostTimerNum">0</span>
-              </div>
-
-              <div class="tiles">
-                <div class="tile"><span class="tile-label">Answered</span><span class="tile-value mono" id="tAnswered">0/0</span></div>
-                <div class="tile"><span class="tile-label">Avg. time</span><span class="tile-value mono" id="tAvg">–</span></div>
-                <div class="tile" id="tCorrectTile"><span class="tile-label">Correct</span><span class="tile-value mono" id="tCorrect">–</span></div>
-              </div>
-
-              <div class="section">
-                <h3 class="section-title" id="chartTitle">Answers</h3>
-                <div class="bars" id="bars" role="list"></div>
-                <p class="muted small" id="barsEmpty">Waiting for the first answer…</p>
-              </div>
-
-              <div class="section">
-                <h3 class="section-title"><svg class="icon" aria-hidden="true"><use href="#i-zap"/></svg><span id="fastTitle">Quickest</span></h3>
-                <ol class="podium" id="podium"></ol>
-                <p class="muted small" id="podiumEmpty">No one yet.</p>
-              </div>
-
-              <div class="section" id="rankingSection" hidden>
-                <h3 class="section-title">This question</h3>
-                <ol class="rank-list" id="qRanking"></ol>
-              </div>
-
-              <div class="actions">
-                <button class="btn ghost block" id="endQ" type="button">
-                  <svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg><span>End Now</span>
-                </button>
-                <button class="btn primary block" id="nextQ" type="button" hidden>
-                  <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>Next Question</span>
-                </button>
-              </div>
-            </div>
           </div>
 
           <!-- Side panel -->
@@ -345,7 +361,7 @@
             <ol class="rank-list" id="rBoard"></ol>
             <p class="muted small" id="rMyRank"></p>
           </div>
-          <p class="muted small">Next question coming up…</p>
+          <p class="muted small" id="rNext">Next question coming up…</p>
         </div>
 
         <button class="btn danger-ghost" id="leaveRoom" type="button">

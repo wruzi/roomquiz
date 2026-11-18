@@ -463,6 +463,13 @@ input[type="range"] { width: 100%; height: 44px; accent-color: var(--primary); c
 
 .actions { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 24px; }
 
+.queued { border-style: dashed; border-color: var(--line-strong); }
+.queued-text { font-weight: 600; font-size: 1.0625rem; overflow-wrap: anywhere; }
+.queued-status { margin-top: 4px; font-size: 0.9375rem; color: var(--ink-2); }
+.queued-status:empty { display: none; }
+.queued-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.queued-actions .btn { flex: 1 1 auto; }
+
 /* ---------- student play ---------- */
 .play { max-width: 520px; margin: 0 auto; display: grid; gap: 12px; }
 .play-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 40px; }
